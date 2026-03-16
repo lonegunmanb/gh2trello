@@ -150,18 +150,18 @@
 ## 阶段 7: 集成测试
 
 ### 7.1 集成测试准备
-- [ ] **7.1.1** 创建测试数据：issues 和 PRs（title 以 `[Please ignore: acceptance test]` 开头）
-- [ ] **7.1.2** 配置测试环境变量
+- [x] **7.1.1** 创建测试数据：issues 和 PRs（title 以 `[Please ignore: acceptance test]` 开头）
+- [x] **7.1.2** 配置测试环境变量
 
 ### 7.2 集成测试实现
-- [ ] **7.2.1** 测试：Search with `is:issue` returns only issues
-- [ ] **7.2.2** 测试：Search with `is:pr` returns only PRs
-- [ ] **7.2.3** 测试：Search with `label:bug` filters correctly
-- [ ] **7.2.4** 测试：Search with `author:` filters correctly
-- [ ] **7.2.5** 测试：Search with `state:open` / `state:closed` filters correctly
-- [ ] **7.2.6** 测试：Search with combined filters works
-- [ ] **7.2.7** 测试：Search with `created:>=` time filter works
-- [ ] **7.2.8** 测试：Watermark logic - only items newer than watermark are returned
+- [x] **7.2.1** 测试：Search with `is:issue` returns only issues
+- [x] **7.2.2** 测试：Search with `is:pr` returns only PRs
+- [x] **7.2.3** 测试：Search with `label:bug` filters correctly
+- [x] **7.2.4** 测试：Search with `author:` filters correctly
+- [x] **7.2.5** 测试：Search with `state:open` / `state:closed` filters correctly
+- [x] **7.2.6** 测试：Search with combined filters works
+- [x] **7.2.7** 测试：Search with `created:>=` time filter works
+- [x] **7.2.8** 测试：Watermark logic - only items newer than watermark are returned
 
 ---
 
@@ -184,6 +184,6 @@
 | 阶段 4: 同步引擎 | 7 | 7 | ✅ 全部完成 (85.5% coverage) |
 | 阶段 5: CLI 集成 | 6 | 6 | ✅ 全部完成 (68.5% coverage) |
 | 阶段 6: README | 1 | 1 | ✅ 全部完成 |
-| 阶段 7: 集成测试 | 8 | 0 | ❌ 未开始 |
+| 阶段 7: 集成测试 | 8 | 8 | ✅ 全部完成 |
 | 阶段 8: CI | 1 | 0 | ❌ 未开始 |
-| **总计** | **53** | **42** | |
+| **总计** | **53** | **50** | |
