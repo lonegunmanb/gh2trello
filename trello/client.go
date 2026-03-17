@@ -22,10 +22,10 @@ type Client struct {
 // Card represents a Trello card.
 type Card struct {
 	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Desc     string `json:"desc"`
-	IDList   string `json:"idList"`
-	Pos      string `json:"pos,omitempty"`
+	Name     string  `json:"name"`
+	Desc     string  `json:"desc"`
+	IDList   string  `json:"idList"`
+	Pos      float64 `json:"pos,omitempty"`
 }
 
 // NewClient creates a new Trello client.
