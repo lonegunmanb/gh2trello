@@ -359,3 +359,114 @@ func TestCardExists_Error(t *testing.T) {
 	_, err := client.CardExists("list123", "https://github.com/owner/repo/issues/123")
 	assert.Error(t, err)
 }
+
+func TestFindCard_FoundInIssueList(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if callCount == 1 {
+			// issue list returns the matching card
+			w.Write([]byte(`[{"id":"card1","desc":"https://github.com/owner/repo/issues/1\nbody"}]`))
+		} else {
+			w.Write([]byte(`[]`))
+		}
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	card, err := client.FindCard("issue_list", "pr_list", "https://github.com/owner/repo/issues/1")
+	require.NoError(t, err)
+	require.NotNil(t, card)
+	assert.Equal(t, "card1", card.ID)
+	assert.Equal(t, "issue_list", card.IDList)
+	assert.Equal(t, 1, callCount, "Should stop after finding card in first list")
+}
+
+func TestFindCard_FoundInPRList(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if callCount == 1 {
+			// issue list is empty
+			w.Write([]byte(`[]`))
+		} else {
+			// pr list contains the card
+			w.Write([]byte(`[{"id":"card2","desc":"https://github.com/owner/repo/pull/2\nbody"}]`))
+		}
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	card, err := client.FindCard("issue_list", "pr_list", "https://github.com/owner/repo/pull/2")
+	require.NoError(t, err)
+	require.NotNil(t, card)
+	assert.Equal(t, "card2", card.ID)
+	assert.Equal(t, "pr_list", card.IDList)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestFindCard_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	card, err := client.FindCard("issue_list", "pr_list", "https://github.com/owner/repo/issues/99")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+func TestFindCard_ErrorOnFirstList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`server error`))
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	_, err := client.FindCard("issue_list", "pr_list", "https://github.com/owner/repo/issues/1")
+	assert.Error(t, err)
+}
+
+func TestMoveCard_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Contains(t, r.URL.Path, "/cards/card1")
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "api_key", r.URL.Query().Get("key"))
+		assert.Equal(t, "api_token", r.URL.Query().Get("token"))
+
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "issue_list", body["idList"])
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"card1","idList":"issue_list"}`))
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	err := client.MoveCard("card1", "issue_list")
+	require.NoError(t, err)
+}
+
+func TestMoveCard_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid card"}`))
+	}))
+	defer server.Close()
+
+	client := newTestTrelloClient(server)
+	err := client.MoveCard("bad_card", "issue_list")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to move card")
+}
