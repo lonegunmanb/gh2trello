@@ -24,7 +24,8 @@ type GitHubClient interface {
 // TrelloClient defines the Trello operations needed by the sync engine.
 type TrelloClient interface {
 	CreateCardForIssue(issue *github.Issue, issueListID, prListID string) (*trello.Card, error)
-	CardExists(listID, url string) (bool, error)
+	FindCard(issueListID, prListID, url string) (*trello.Card, error)
+	MoveCard(cardID, targetListID string) error
 }
 
 // Engine orchestrates syncing GitHub issues/PRs to Trello.
@@ -58,12 +59,18 @@ func (e *Engine) SyncWorkitem(ctx context.Context, owner, repo string, number in
 		listID = e.Config.TrelloPRListID
 	}
 
-	// Check for duplicates
-	exists, err := e.Trello.CardExists(listID, issue.GetHTMLURL())
+	// Check if card already exists in either list
+	card, err := e.Trello.FindCard(e.Config.TrelloIssueListID, e.Config.TrelloPRListID, issue.GetHTMLURL())
 	if err != nil {
-		return fmt.Errorf("failed to check card existence: %w", err)
+		return fmt.Errorf("failed to find card: %w", err)
 	}
-	if exists {
+	if card != nil {
+		// Card exists — move it to the correct list if needed
+		if card.IDList != listID {
+			if err := e.Trello.MoveCard(card.ID, listID); err != nil {
+				return fmt.Errorf("failed to move card to correct list: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -111,14 +118,20 @@ func (e *Engine) SyncRepo(ctx context.Context, repoFullName string) (int, error)
 			listID = e.Config.TrelloPRListID
 		}
 
-		// Check dedup
-		exists, err := e.Trello.CardExists(listID, issue.GetHTMLURL())
+		// Check if card already exists in either list
+		card, err := e.Trello.FindCard(e.Config.TrelloIssueListID, e.Config.TrelloPRListID, issue.GetHTMLURL())
 		if err != nil {
-			log.Printf("Warning: failed to check card existence for %s: %v", issue.GetHTMLURL(), err)
+			log.Printf("Warning: failed to find card for %s: %v", issue.GetHTMLURL(), err)
 			continue
 		}
-		if exists {
-			// Still track time for watermark even if skipped
+		if card != nil {
+			// Card exists — move it to the correct list if needed
+			if card.IDList != listID {
+				if err := e.Trello.MoveCard(card.ID, listID); err != nil {
+					log.Printf("Warning: failed to move card for %s: %v", issue.GetHTMLURL(), err)
+				}
+			}
+			// Still track time for watermark
 			if effectiveTime.After(latestTime) {
 				latestTime = effectiveTime
 			}

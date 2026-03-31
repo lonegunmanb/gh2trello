@@ -128,6 +128,58 @@ func (c *Client) CardExists(listID, url string) (bool, error) {
 	return false, nil
 }
 
+// FindCard searches for a card with the given URL in either the issue list or
+// the PR list. It returns the card with its IDList field set to the list where
+// it was found, or nil if the card does not exist in either list.
+func (c *Client) FindCard(issueListID, prListID, url string) (*Card, error) {
+	for _, listID := range []string{issueListID, prListID} {
+		cards, err := c.GetCardsInList(listID)
+		if err != nil {
+			return nil, err
+		}
+		for _, card := range cards {
+			if strings.HasPrefix(card.Desc, url) {
+				card.IDList = listID
+				return &card, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// MoveCard moves a card to a different list.
+func (c *Client) MoveCard(cardID, targetListID string) error {
+	url := fmt.Sprintf("%s/cards/%s?key=%s&token=%s", c.BaseURL, cardID, c.APIKey, c.Token)
+
+	data := map[string]string{
+		"idList": targetListID,
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to move card: %s", string(body))
+	}
+
+	return nil
+}
+
 // CreateCardForIssue creates a Trello card for a GitHub issue or PR,
 // dispatching to the correct list based on whether it's a PR.
 func (c *Client) CreateCardForIssue(issue *github.Issue, issueListID, prListID string) (*Card, error) {

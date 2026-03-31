@@ -40,15 +40,26 @@ func (m *mockGitHubClient) GetEffectiveTime(ctx context.Context, issue *github.I
 
 type mockTrelloClient struct {
 	createCardFunc func(issue *github.Issue, issueListID, prListID string) (*trello.Card, error)
-	cardExistsFunc func(listID, url string) (bool, error)
+	findCardFunc   func(issueListID, prListID, url string) (*trello.Card, error)
+	moveCardFunc   func(cardID, targetListID string) error
 }
 
 func (m *mockTrelloClient) CreateCardForIssue(issue *github.Issue, issueListID, prListID string) (*trello.Card, error) {
 	return m.createCardFunc(issue, issueListID, prListID)
 }
 
-func (m *mockTrelloClient) CardExists(listID, url string) (bool, error) {
-	return m.cardExistsFunc(listID, url)
+func (m *mockTrelloClient) FindCard(issueListID, prListID, url string) (*trello.Card, error) {
+	if m.findCardFunc != nil {
+		return m.findCardFunc(issueListID, prListID, url)
+	}
+	return nil, nil
+}
+
+func (m *mockTrelloClient) MoveCard(cardID, targetListID string) error {
+	if m.moveCardFunc != nil {
+		return m.moveCardFunc(cardID, targetListID)
+	}
+	return nil
 }
 
 // --- Helpers ---
@@ -106,8 +117,8 @@ func TestSyncWorkitem_Issue(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(listID, url string) (bool, error) {
-			return false, nil
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) {
+			return nil, nil
 		},
 		createCardFunc: func(i *github.Issue, issueListID, prListID string) (*trello.Card, error) {
 			createdInList = issueListID
@@ -134,9 +145,8 @@ func TestSyncWorkitem_PR(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(listID, url string) (bool, error) {
-			assert.Equal(t, "pr_list", listID, "PR should check PR list for dedup")
-			return false, nil
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) {
+			return nil, nil
 		},
 		createCardFunc: func(i *github.Issue, issueListID, prListID string) (*trello.Card, error) {
 			receivedIssueListID = issueListID
@@ -170,23 +180,29 @@ func TestSyncWorkitem_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to get issue")
 }
 
-func TestSyncWorkitem_Duplicate(t *testing.T) {
+func TestSyncWorkitem_ExistsInCorrectList(t *testing.T) {
 	created, _ := time.Parse(time.RFC3339, "2026-01-10T00:00:00Z")
 	issue := makeIssue(42, "Bug fix", "https://github.com/owner/repo/issues/42", created)
 
 	createCalled := false
+	moveCalled := false
 	ghMock := &mockGitHubClient{
 		getIssueFunc: func(_ context.Context, _, _ string, _ int) (*github.Issue, error) {
 			return issue, nil
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(listID, url string) (bool, error) {
-			return true, nil // Already exists
+		findCardFunc: func(issueListID, _, _ string) (*trello.Card, error) {
+			// Card already in the issue list (correct list)
+			return &trello.Card{ID: "card1", IDList: issueListID}, nil
 		},
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			createCalled = true
 			return nil, nil
+		},
+		moveCardFunc: func(_, _ string) error {
+			moveCalled = true
+			return nil
 		},
 	}
 
@@ -195,7 +211,45 @@ func TestSyncWorkitem_Duplicate(t *testing.T) {
 
 	err := engine.SyncWorkitem(t.Context(), "owner", "repo", 42)
 	require.NoError(t, err)
-	assert.False(t, createCalled, "Should not create card when duplicate exists")
+	assert.False(t, createCalled, "Should not create card when already in correct list")
+	assert.False(t, moveCalled, "Should not move card when already in correct list")
+}
+
+func TestSyncWorkitem_ExistsInWrongList(t *testing.T) {
+	created, _ := time.Parse(time.RFC3339, "2026-01-10T00:00:00Z")
+	// An issue that ended up in the PR list
+	issue := makeIssue(42, "Bug fix", "https://github.com/owner/repo/issues/42", created)
+
+	createCalled := false
+	var movedToList string
+	ghMock := &mockGitHubClient{
+		getIssueFunc: func(_ context.Context, _, _ string, _ int) (*github.Issue, error) {
+			return issue, nil
+		},
+	}
+	trelloMock := &mockTrelloClient{
+		findCardFunc: func(_, prListID, _ string) (*trello.Card, error) {
+			// Card is in the PR list (wrong list for an issue)
+			return &trello.Card{ID: "card1", IDList: prListID}, nil
+		},
+		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
+			createCalled = true
+			return nil, nil
+		},
+		moveCardFunc: func(cardID, targetListID string) error {
+			assert.Equal(t, "card1", cardID)
+			movedToList = targetListID
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	engine := NewEngine(ghMock, trelloMock, cfg, "")
+
+	err := engine.SyncWorkitem(t.Context(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.False(t, createCalled, "Should not create card when it already exists")
+	assert.Equal(t, "issue_list", movedToList, "Issue card should be moved to issue list")
 }
 
 func TestSyncWorkitem_TrelloCreateError(t *testing.T) {
@@ -208,8 +262,8 @@ func TestSyncWorkitem_TrelloCreateError(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) {
-			return false, nil
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) {
+			return nil, nil
 		},
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			return nil, fmt.Errorf("trello error")
@@ -256,8 +310,8 @@ func TestSyncRepo_NewItemsCreated(t *testing.T) {
 
 	var createdCards []string
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) {
-			return false, nil
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) {
+			return nil, nil
 		},
 		createCardFunc: func(issue *github.Issue, _, _ string) (*trello.Card, error) {
 			createdCards = append(createdCards, issue.GetTitle())
@@ -305,7 +359,7 @@ func TestSyncRepo_NoNewItems(t *testing.T) {
 	assert.Equal(t, "2026-01-01T00:00:00Z", repoCfg.Since)
 }
 
-func TestSyncRepo_DuplicatesSkipped(t *testing.T) {
+func TestSyncRepo_ExistingCardInCorrectList(t *testing.T) {
 	t1, _ := time.Parse(time.RFC3339, "2026-01-15T00:00:00Z")
 	t2, _ := time.Parse(time.RFC3339, "2026-01-20T00:00:00Z")
 
@@ -329,10 +383,18 @@ func TestSyncRepo_DuplicatesSkipped(t *testing.T) {
 		},
 	}
 
-	// Issue 1 already exists, Issue 2 does not
+	moveCalled := false
+	// Issue 1 already exists in the correct list; Issue 2 does not
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_ string, url string) (bool, error) {
-			return url == "https://github.com/owner/repo/issues/1", nil
+		findCardFunc: func(issueListID, _, url string) (*trello.Card, error) {
+			if url == "https://github.com/owner/repo/issues/1" {
+				return &trello.Card{ID: "card1", IDList: issueListID}, nil
+			}
+			return nil, nil
+		},
+		moveCardFunc: func(_, _ string) error {
+			moveCalled = true
+			return nil
 		},
 		createCardFunc: func(issue *github.Issue, _, _ string) (*trello.Card, error) {
 			assert.Equal(t, "Issue 2", issue.GetTitle(), "Only Issue 2 should be created")
@@ -345,10 +407,61 @@ func TestSyncRepo_DuplicatesSkipped(t *testing.T) {
 	count, err := engine.SyncRepo(t.Context(), "owner/repo")
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "Only 1 new card should be created")
+	assert.False(t, moveCalled, "Should not move card already in the correct list")
 
-	// Watermark should still advance to latest time (including duplicates)
+	// Watermark should still advance to latest time (including existing cards)
 	repoCfg, _ := cfg.GetRepo("owner/repo")
 	assert.Equal(t, "2026-01-20T00:00:00Z", repoCfg.Since)
+}
+
+func TestSyncRepo_ExistingCardInWrongList(t *testing.T) {
+	t1, _ := time.Parse(time.RFC3339, "2026-01-15T00:00:00Z")
+
+	// An issue card that ended up in the PR list
+	issues := []*github.Issue{
+		makeIssue(1, "Issue 1", "https://github.com/owner/repo/issues/1", t1),
+	}
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+
+	cfg := newTestConfig()
+	cfg.AddRepo("owner/repo", "2026-01-01T00:00:00Z", "")
+
+	ghMock := &mockGitHubClient{
+		searchIssuesFunc: func(_ context.Context, _ string) ([]*github.Issue, error) {
+			return issues, nil
+		},
+		getEffectiveFunc: func(_ context.Context, issue *github.Issue) time.Time {
+			return issue.GetCreatedAt().Time
+		},
+	}
+
+	var movedToList string
+	createCalled := false
+	trelloMock := &mockTrelloClient{
+		findCardFunc: func(_, prListID, _ string) (*trello.Card, error) {
+			// Card is in the wrong list (PR list instead of issue list)
+			return &trello.Card{ID: "card1", IDList: prListID}, nil
+		},
+		moveCardFunc: func(cardID, targetListID string) error {
+			assert.Equal(t, "card1", cardID)
+			movedToList = targetListID
+			return nil
+		},
+		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
+			createCalled = true
+			return &trello.Card{ID: "card"}, nil
+		},
+	}
+
+	engine := NewEngine(ghMock, trelloMock, cfg, configPath)
+
+	count, err := engine.SyncRepo(t.Context(), "owner/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "No new cards should be created when card is moved")
+	assert.False(t, createCalled, "Should not create card when it already exists")
+	assert.Equal(t, "issue_list", movedToList, "Issue card should be moved to issue list")
 }
 
 func TestSyncRepo_WatermarkFiltersOldItems(t *testing.T) {
@@ -378,8 +491,8 @@ func TestSyncRepo_WatermarkFiltersOldItems(t *testing.T) {
 
 	var createdTitles []string
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) {
-			return false, nil
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) {
+			return nil, nil
 		},
 		createCardFunc: func(issue *github.Issue, _, _ string) (*trello.Card, error) {
 			createdTitles = append(createdTitles, issue.GetTitle())
@@ -442,7 +555,7 @@ func TestSyncRepo_ConfigSaved(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) { return false, nil },
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) { return nil, nil },
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			return &trello.Card{ID: "card"}, nil
 		},
@@ -484,15 +597,12 @@ func TestSyncRepo_IssueAndPRDispatch(t *testing.T) {
 		},
 	}
 
-	var issueListChecks, prListChecks int
+	var issueListReceived, prListReceived string
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(listID, _ string) (bool, error) {
-			if listID == "issue_list" {
-				issueListChecks++
-			} else if listID == "pr_list" {
-				prListChecks++
-			}
-			return false, nil
+		findCardFunc: func(issueListID, prListID, _ string) (*trello.Card, error) {
+			issueListReceived = issueListID
+			prListReceived = prListID
+			return nil, nil
 		},
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			return &trello.Card{ID: "card"}, nil
@@ -504,8 +614,8 @@ func TestSyncRepo_IssueAndPRDispatch(t *testing.T) {
 	count, err := engine.SyncRepo(t.Context(), "owner/repo")
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
-	assert.Equal(t, 1, issueListChecks, "Issue dedup should check issue list")
-	assert.Equal(t, 1, prListChecks, "PR dedup should check PR list")
+	assert.Equal(t, "issue_list", issueListReceived, "FindCard should receive issue list as first arg")
+	assert.Equal(t, "pr_list", prListReceived, "FindCard should receive PR list as second arg")
 }
 
 // =========================================================================
@@ -608,7 +718,7 @@ func TestSyncRepo_EmptySinceNoFilter(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) { return false, nil },
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) { return nil, nil },
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			return &trello.Card{ID: "card"}, nil
 		},
@@ -685,7 +795,7 @@ func TestSyncRepo_ConfigRoundTrip(t *testing.T) {
 		},
 	}
 	trelloMock := &mockTrelloClient{
-		cardExistsFunc: func(_, _ string) (bool, error) { return false, nil },
+		findCardFunc: func(_, _, _ string) (*trello.Card, error) { return nil, nil },
 		createCardFunc: func(_ *github.Issue, _, _ string) (*trello.Card, error) {
 			return &trello.Card{ID: "card"}, nil
 		},
